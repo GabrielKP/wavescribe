@@ -482,7 +482,11 @@ class AudioAnnotator(QMainWindow):
 
     def split_word(self):
         """Split the current word into two new words"""
-        if self.c_rating_df is None:
+        if (
+            self.c_rating_df is None
+            or self.c_start_time is None
+            or self.c_end_time is None
+        ):
             QMessageBox.warning(
                 self,
                 "No data loaded",
@@ -498,17 +502,19 @@ class AudioAnnotator(QMainWindow):
         self.c_rating_df = pd.concat([first_df, new_row_df, second_df]).reset_index(
             drop=True
         )
+        # update start and end times
+        self.c_rating_df.loc[self.c_word_index, "end"] = (
+            self.c_start_time + self.c_end_time
+        ) / 2 - 0.1
+        self.c_rating_df.loc[self.c_word_index + 1, "start"] = (
+            self.c_start_time + self.c_end_time
+        ) / 2 + 0.1
         # need to save new df
         self.c_rating_df.to_csv(
             self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
             index=False,
         )
         self.show_current_word()
-        QMessageBox.information(
-            self,
-            "Word split",
-            "Word split",
-        )
 
     def delete_word(self):
         """Delete the current word"""
@@ -523,7 +529,7 @@ class AudioAnnotator(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Delete word",
-            "Are you sure you want to delete this word?",
+            "Are you sure?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -541,11 +547,6 @@ class AudioAnnotator(QMainWindow):
             index=False,
         )
         self.show_current_word()
-        QMessageBox.information(
-            self,
-            "Word deleted",
-            "Word deleted",
-        )
 
     def normalize_word(self, word: str) -> str:
         return word.lower().strip()
