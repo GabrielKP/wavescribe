@@ -7,7 +7,7 @@ import pandas as pd
 import pyqtgraph as pg
 import sounddevice as sd
 import soundfile as sf
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -32,6 +32,7 @@ class AudioAnnotator(QMainWindow):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.rater_name = "GKP"
         self.padding_s = 2
+        self.context_words = 4
 
         self.needed_columns = [
             "transcription",
@@ -40,6 +41,7 @@ class AudioAnnotator(QMainWindow):
             "start",
             "end",
             "rater",
+            "changed",
         ]
 
         # audio init
@@ -51,6 +53,8 @@ class AudioAnnotator(QMainWindow):
         self.c_end_time = None
         self.c_changed_times = False
         self.c_sub_id = None
+        self.playback_line = None
+        self.playback_timer = None
 
         self.init_ui()
 
@@ -124,89 +128,118 @@ class AudioAnnotator(QMainWindow):
         bottom_panel = QWidget()
         bottom_layout = QHBoxLayout(bottom_panel)
 
-        # add text panel
+        # Create context words panel (left of text edit)
+        context_panel = QWidget()
+        context_layout = QVBoxLayout(context_panel)
+        context_panel.setMaximumWidth(200)
+        context_panel.setMinimumWidth(150)
+        context_panel.setMinimumHeight(200)  # Set minimum height
+
+        # Context words list
+        self.context_list = QListWidget()
+        self.context_list.itemClicked.connect(self.on_context_item_clicked)
+        context_layout.addWidget(self.context_list)
+
+        # Add text panel
         self.word_text_edit = QTextEdit()
         self.word_text_edit.setPlaceholderText("")
         self.word_text_edit.setMaximumWidth(500)
+        self.word_text_edit.setMinimumWidth(210)
+        self.word_text_edit.setMinimumHeight(200)  # Set same minimum height
         font = self.word_text_edit.font()
         font.setPointSize(36)
         self.word_text_edit.setFont(font)
-        bottom_layout.addWidget(self.word_text_edit)
 
         # Create buttons & text fields
-        self.text_field_counter = QLabel("Select a file to load")
-        font = self.text_field_counter.font()
-        font.setPointSize(18)
-        self.text_field_counter.setFont(font)
-        self.text_field_counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.play_button = QPushButton("PLAY WORD")
         self.play_context_button = QPushButton("PLAY CONTEXT")
-        self.reset_button = QPushButton("RESET")
+        self.reset_button = QPushButton("RESET WORD")
         self.next_button = QPushButton("NEXT WORD")
         self.prev_button = QPushButton("PREV WORD")
         self.split_button = QPushButton("SPLIT WORD")
         self.delete_button = QPushButton("DELETE WORD")
-        self.text_field_rater = QLabel("LAST RATER: N/A")
+        self.text_field_rater = QLabel("Last rater: N/A")
         font = self.text_field_rater.font()
         font.setPointSize(18)
         self.text_field_rater.setFont(font)
         self.text_field_rater.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # disable buttons
+        self.play_button.setEnabled(False)
+        self.play_context_button.setEnabled(False)
+        self.reset_button.setEnabled(False)
+        self.next_button.setEnabled(False)
+        self.prev_button.setEnabled(False)
+        self.split_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
+
         # Set minimum height for all buttons to make them thicker
-        button_height = 36
-        for qthing in [
-            self.text_field_counter,
-            self.play_button,
-            self.reset_button,
-            self.play_context_button,
-            self.next_button,
-            self.prev_button,
-            self.split_button,
-            self.delete_button,
-            self.text_field_rater,
-        ]:
-            qthing.setMinimumHeight(button_height)
-            qthing.setFixedWidth(210)
+        def set_widget_vals(
+            widgets: list[QWidget], height_min: int, width_max: int, width_min: int
+        ):
+            for widget in widgets:
+                widget.setMinimumHeight(height_min)
+                widget.setMaximumWidth(width_max)
+                widget.setMinimumWidth(width_min)
+
+        set_widget_vals(
+            widgets=[
+                self.next_button,
+                self.prev_button,
+                self.reset_button,
+                self.split_button,
+                self.delete_button,
+                self.text_field_rater,
+            ],
+            height_min=36,
+            width_max=210,
+            width_min=80,
+        )
+        set_widget_vals(
+            widgets=[
+                self.play_button,
+                self.play_context_button,
+            ],
+            height_min=50,
+            width_max=210,
+            width_min=80,
+        )
 
         # bind buttons to functions
         self.play_button.clicked.connect(self.play_audio)
-        # self.play_context_button.clicked.connect(self.play_context)
+        self.play_context_button.clicked.connect(self.play_context)
         self.reset_button.clicked.connect(self.reset_word)
         self.prev_button.clicked.connect(self.prev_word)
         self.next_button.clicked.connect(self.next_word)
-        # self.split_button.clicked.connect(self.split_word)
-        # self.delete_button.clicked.connect(self.delete_word)
+        self.split_button.clicked.connect(self.split_word)
+        self.delete_button.clicked.connect(self.delete_word)
 
         # Create two vertical button groups
         # Left column: Play and Reset buttons
-        left_button_panel = QWidget()
-        left_button_layout = QVBoxLayout(left_button_panel)
-        left_button_layout.addWidget(self.text_field_counter)
-        left_button_layout.addWidget(self.play_button)
-        left_button_layout.addWidget(self.play_context_button)
-        left_button_layout.addWidget(self.reset_button)
-        left_button_layout.addStretch()
+        play_button_panel = QWidget()
+        play_button_layout = QVBoxLayout(play_button_panel)
+        play_button_layout.addStretch()
+        play_button_layout.addWidget(self.text_field_rater)
+        play_button_layout.addWidget(self.play_button)
+        play_button_layout.addWidget(self.play_context_button)
+        play_button_layout.addStretch()
 
         # Middle column: Navigation and editing buttons
-        middle_button_panel = QWidget()
-        middle_button_layout = QVBoxLayout(middle_button_panel)
-        middle_button_layout.addWidget(self.next_button)
-        middle_button_layout.addWidget(self.prev_button)
-        middle_button_layout.addWidget(self.split_button)
-        middle_button_layout.addWidget(self.delete_button)
-        middle_button_layout.addStretch()
-
-        # Right column: Rater text field
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(self.text_field_rater)
-        right_layout.addStretch()
+        navigation_button_panel = QWidget()
+        navigation_button_layout = QVBoxLayout(navigation_button_panel)
+        navigation_button_layout.addWidget(self.next_button)
+        navigation_button_layout.addWidget(self.prev_button)
+        navigation_button_layout.addWidget(self.reset_button)
+        navigation_button_layout.addWidget(self.split_button)
+        navigation_button_layout.addWidget(self.delete_button)
+        navigation_button_layout.addStretch()
 
         # Add both button panels to main layout
-        bottom_layout.addWidget(left_button_panel)
-        bottom_layout.addWidget(middle_button_panel)
-        bottom_layout.addWidget(right_panel)
-        bottom_layout.addStretch()
+        bottom_layout.addWidget(context_panel)
+        bottom_layout.addWidget(navigation_button_panel)
+        bottom_layout.addWidget(play_button_panel)
+        bottom_layout.addWidget(self.word_text_edit)
+        # bottom_layout.addStretch()
 
         right_panel_splitter.addWidget(bottom_panel)
 
@@ -236,9 +269,6 @@ class AudioAnnotator(QMainWindow):
         # update word counter & rater text field
         last_rater = self.c_rating_df.loc[self.c_word_index, "rater"]
         last_rater = last_rater or "N/A"
-        self.text_field_counter.setText(
-            f"{self.c_word_index + 1}/{len(self.c_rating_df)}"
-        )
         self.text_field_rater.setText(f"Last rater: {last_rater}")
 
         # get indices
@@ -257,16 +287,163 @@ class AudioAnnotator(QMainWindow):
         self.plot_widget.setXRange(start_time_padded, end_time_padded)
 
         # Lock y-axis to prevent scrolling
-        self.plot_widget.setMouseEnabled(
-            x=True, y=False
-        )  # Disable y-axis mouse interaction
+        self.plot_widget.setMouseEnabled(x=True, y=False)
+        self.plot_widget.setYRange(self.c_audio_y_min, self.c_audio_y_max)
 
-        # plot start and end lines
-        self.plot_widget.addLine(x=self.c_start_time, pen=pg.mkPen("r", width=2))
-        self.plot_widget.addLine(x=self.c_end_time, pen=pg.mkPen("g", width=2))
+        # plot start and end lines (draggable)
+        self.start_line = pg.InfiniteLine(
+            pos=self.c_start_time,
+            pen=pg.mkPen("g", width=3),
+            hoverPen=pg.mkPen("orange", width=3),
+            movable=True,
+        )
+        self.end_line = pg.InfiniteLine(
+            pos=self.c_end_time,
+            pen=pg.mkPen("r", width=3),
+            hoverPen=pg.mkPen("orange", width=3),
+            movable=True,
+        )
 
-    def play_audio(self):
-        """Function that is called when the PLAY AUDIO button is clicked."""
+        # Connect line movement to update times
+        self.start_line.sigPositionChanged.connect(self.on_start_line_moved)
+        self.end_line.sigPositionChanged.connect(self.on_end_line_moved)
+
+        self.plot_widget.addItem(self.start_line)
+        self.plot_widget.addItem(self.end_line)
+
+        # show list of previous and next words
+        self.context_list.clear()
+        context_words = self.c_rating_df.loc[:, "transcription"].tolist()
+        context_indices = list(range(len(self.c_rating_df)))
+        current_item = None
+        for idx_word, word in zip(context_indices, context_words):
+            if idx_word == self.c_word_index:
+                item = QListWidgetItem(f"{idx_word:03d} | ▶ {word}")
+                item.setBackground(Qt.GlobalColor.darkGreen)
+                item.setForeground(Qt.GlobalColor.white)
+                current_item = item
+            else:
+                item = QListWidgetItem(f"{idx_word:03d} |  {word}")
+            self.context_list.addItem(item)
+
+        # Scroll to the current word
+        if current_item is not None:
+            self.context_list.scrollToItem(
+                current_item, QListWidget.ScrollHint.PositionAtCenter
+            )
+
+        # enable/disable buttons
+        self.next_button.setEnabled(True)
+        if self.c_word_index == len(self.c_rating_df) - 1:
+            self.next_button.setText("SAVE")
+        else:
+            self.next_button.setText("NEXT WORD")
+        self.prev_button.setEnabled(self.c_word_index > 0)
+        self.split_button.setEnabled(True)
+        self.delete_button.setEnabled(len(self.c_rating_df) > 1)
+        self.play_button.setEnabled(True)
+        self.play_context_button.setEnabled(True)
+        self.reset_button.setEnabled(True)
+
+    def on_context_item_clicked(self, item):
+        """Handle click on context list item to jump to that word"""
+        if self.c_rating_df is None:
+            return
+
+        self.save_rating()
+
+        # Extract word index from the item text (format: "000 | word")
+        item_text = item.text()
+        try:
+            word_index = int(item_text.split(" | ")[0])
+            if 0 <= word_index < len(self.c_rating_df):
+                self.c_word_index = word_index
+                self.show_current_word()
+        except (ValueError, IndexError):
+            # If parsing fails, ignore the click
+            QMessageBox.warning(
+                self,
+                "Navigation failed, use next/prev buttons",
+                "Navigation failed, use next/prev buttons",
+            )
+            pass
+
+    def on_start_line_moved(self, line):
+        """Called when the start line is dragged"""
+        new_start_time = line.value()
+
+        # Prevent start line from going beyond end line
+        if self.c_end_time is not None and new_start_time >= self.c_end_time:
+            # Reset to previous position
+            line.setValue(self.c_start_time)
+            return
+
+        self.c_start_time = new_start_time
+        self.c_changed_times = True
+
+    def on_end_line_moved(self, line):
+        """Called when the end line is dragged"""
+        new_end_time = line.value()
+
+        # Prevent end line from going before start line
+        if self.c_start_time is not None and new_end_time <= self.c_start_time:
+            # Reset to previous position
+            line.setValue(self.c_end_time)
+            return
+
+        self.c_end_time = new_end_time
+        self.c_changed_times = True
+
+    def start_playback_tracking(self, start_time, end_time):
+        """Start tracking playback position with a blue line"""
+        # Remove existing playback line if any
+        if self.playback_line is not None:
+            self.plot_widget.removeItem(self.playback_line)
+
+        # Create blue playback line
+        self.playback_line = pg.InfiniteLine(
+            pos=start_time, pen=pg.mkPen("b", width=2), movable=False
+        )
+        self.plot_widget.addItem(self.playback_line)
+
+        # Create timer to update playback position
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(
+            lambda: self.update_playback_position(start_time, end_time)
+        )
+        self.playback_timer.start(10)  # Update every 10ms
+
+        # Store playback start time
+        self.playback_start_time = start_time
+        self.playback_current_time = start_time
+
+    def update_playback_position(self, start_time, end_time):
+        """Update the blue line position during playback"""
+        if self.playback_line is None:
+            return
+
+        # Calculate elapsed time (approximate)
+        self.playback_current_time += 0.01  # 10ms = 0.01 seconds
+
+        # Update line position
+        self.playback_line.setValue(self.playback_current_time)
+
+        # Stop tracking when playback reaches end
+        if self.playback_current_time >= end_time:
+            self.stop_playback_tracking()
+
+    def stop_playback_tracking(self):
+        """Stop playback tracking and remove the blue line"""
+        if self.playback_timer is not None:
+            self.playback_timer.stop()
+            self.playback_timer = None
+
+        if self.playback_line is not None:
+            self.plot_widget.removeItem(self.playback_line)
+            self.playback_line = None
+
+    def play_audio(self, with_padding: bool = False):
+        """Play the audio from start to end of current word"""
         if self.c_start_time is None or self.c_end_time is None:
             QMessageBox.warning(
                 self,
@@ -283,10 +460,92 @@ class AudioAnnotator(QMainWindow):
             return
 
         print("PLAYING AUDIO")
-        idx_start = int(self.c_start_time * self.c_sample_rate)
-        idx_end = int(self.c_end_time * self.c_sample_rate)
+        if with_padding:
+            start_time = self.c_start_time - self.padding_s
+            end_time = self.c_end_time + self.padding_s
+        else:
+            start_time = self.c_start_time
+            end_time = self.c_end_time
+
+        idx_start = int(start_time * self.c_sample_rate)
+        idx_end = int(end_time * self.c_sample_rate)
         word_audio = self.c_audio_data[idx_start:idx_end]
+
         sd.play(word_audio, self.c_sample_rate)
+
+        # Create and start playback line tracking
+        self.start_playback_tracking(start_time, end_time)
+
+    def play_context(self):
+        """Play the audio with padding around current word"""
+        self.play_audio(with_padding=True)
+
+    def split_word(self):
+        """Split the current word into two new words"""
+        if self.c_rating_df is None:
+            QMessageBox.warning(
+                self,
+                "No data loaded",
+                "No data loaded",
+            )
+            return
+
+        # split df into two
+        first_df = self.c_rating_df.iloc[: self.c_word_index + 1]
+        second_df = self.c_rating_df.iloc[self.c_word_index + 1 :]
+        new_row_df = first_df.loc[[self.c_word_index]]
+        # concat with new row
+        self.c_rating_df = pd.concat([first_df, new_row_df, second_df]).reset_index(
+            drop=True
+        )
+        # need to save new df
+        self.c_rating_df.to_csv(
+            self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
+            index=False,
+        )
+        self.show_current_word()
+        QMessageBox.information(
+            self,
+            "Word split",
+            "Word split",
+        )
+
+    def delete_word(self):
+        """Delete the current word"""
+        if self.c_rating_df is None:
+            QMessageBox.warning(
+                self,
+                "No data loaded",
+                "No data loaded",
+            )
+            return
+        # confirm deletion
+        reply = QMessageBox.question(
+            self,
+            "Delete word",
+            "Are you sure you want to delete this word?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # delete row
+        self.c_rating_df = self.c_rating_df.drop(self.c_word_index).reset_index(
+            drop=True
+        )
+
+        self.c_rating_df.to_csv(
+            self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
+            index=False,
+        )
+        self.show_current_word()
+        QMessageBox.information(
+            self,
+            "Word deleted",
+            "Word deleted",
+        )
 
     def normalize_word(self, word: str) -> str:
         return word.lower().strip()
@@ -315,8 +574,10 @@ class AudioAnnotator(QMainWindow):
             # save
             self.c_rating_df.loc[self.c_word_index, "transcription"] = current_word
             self.c_rating_df.loc[self.c_word_index, "rater"] = self.rater_name
+            self.c_rating_df.loc[self.c_word_index, "start"] = self.c_start_time
+            self.c_rating_df.loc[self.c_word_index, "end"] = self.c_end_time
             self.c_changed_times = False
-        self.c_rating_df.loc[self.c_word_index, "rated"] = True
+            self.c_rating_df.loc[self.c_word_index, "changed"] = True
         self.c_rating_df.to_csv(
             self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
             index=False,
@@ -325,17 +586,23 @@ class AudioAnnotator(QMainWindow):
     def next_word(self):
         """Function that is called when the NEXT WORD button is clicked."""
 
-        self.save_rating()
-        if (
-            self.c_rating_df is not None
-            and self.c_word_index == len(self.c_rating_df) - 1
-        ):
+        if self.c_rating_df is None:
             QMessageBox.warning(
                 self,
-                "No next word",
-                "No next word",
+                "No data loaded",
+                "No data loaded",
             )
             return
+
+        self.save_rating()
+        if self.c_word_index == len(self.c_rating_df) - 1:
+            QMessageBox.information(
+                self,
+                "Data saved!",
+                "Data saved!",
+            )
+            return
+
         self.c_word_index += 1
         self.show_current_word()
 
@@ -378,7 +645,7 @@ class AudioAnnotator(QMainWindow):
                     self.data_dir / "ratings" / f"{sub_id}-free_association_carver.csv"
                 )
                 rating_df = pd.read_csv(old_rating_file)
-                rating_df["rated"] = False
+                rating_df["changed"] = False
                 rating_df.to_csv(rating_file, index=False)
                 print("Loaded old ratings and saved as output")
             self.c_rating_df = rating_df
@@ -402,6 +669,9 @@ class AudioAnnotator(QMainWindow):
 
             self.c_audio_data, self.c_sample_rate = sf.read(audio_file)
 
+            self.c_audio_y_max = np.max(self.c_audio_data) * 1.1
+            self.c_audio_y_min = np.min(self.c_audio_data) * 1.1
+
             self.left_panel_text_field.setText(f"Successfully loaded {sub_id}!")
 
             self.c_word_index = 0
@@ -411,8 +681,36 @@ class AudioAnnotator(QMainWindow):
 def main():
     app = QApplication(sys.argv)
 
-    # Set dark theme (optional, looks good for audio apps)
+    # Set dark theme
     app.setStyle("Fusion")
+
+    # Apply dark color palette
+    from PyQt6.QtGui import QColor
+
+    dark_palette = app.palette()
+
+    # Define dark colors
+    dark_gray = QColor(53, 53, 53)
+    darker_gray = QColor(25, 25, 25)
+    light_gray = QColor(180, 180, 180)
+    blue = QColor(42, 130, 218)
+
+    # Set dark colors for different UI elements
+    dark_palette.setColor(dark_palette.ColorRole.Window, dark_gray)
+    dark_palette.setColor(dark_palette.ColorRole.WindowText, light_gray)
+    dark_palette.setColor(dark_palette.ColorRole.Base, darker_gray)
+    dark_palette.setColor(dark_palette.ColorRole.AlternateBase, dark_gray)
+    dark_palette.setColor(dark_palette.ColorRole.ToolTipBase, dark_gray)
+    dark_palette.setColor(dark_palette.ColorRole.ToolTipText, light_gray)
+    dark_palette.setColor(dark_palette.ColorRole.Text, light_gray)
+    dark_palette.setColor(dark_palette.ColorRole.Button, dark_gray)
+    dark_palette.setColor(dark_palette.ColorRole.ButtonText, light_gray)
+    dark_palette.setColor(dark_palette.ColorRole.BrightText, light_gray)
+    dark_palette.setColor(dark_palette.ColorRole.Link, blue)
+    dark_palette.setColor(dark_palette.ColorRole.Highlight, blue)
+    dark_palette.setColor(dark_palette.ColorRole.HighlightedText, light_gray)
+
+    app.setPalette(dark_palette)
 
     window = AudioAnnotator()
     window.show()
