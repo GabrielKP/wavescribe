@@ -31,7 +31,8 @@ class AudioAnnotator(QMainWindow):
         self.output_dir = self.data_dir / "output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.rater_name = "GKP"
-        self.padding_s = 2
+        self.padding_s = 1.2
+        self.loaded_padding_s = 6
         self.context_words = 4
 
         self.needed_columns = [
@@ -274,16 +275,24 @@ class AudioAnnotator(QMainWindow):
         # get indices
         self.c_start_time = self.c_rating_df.loc[self.c_word_index, "start"]
         self.c_end_time = self.c_rating_df.loc[self.c_word_index, "end"]
-        start_time_padded = max(0, self.c_start_time - self.padding_s)
-        end_time_padded = min(len(self.c_audio_data), self.c_end_time + self.padding_s)
-        idx_start_padded = int(start_time_padded * self.c_sample_rate)
-        idx_end_padded = int(end_time_padded * self.c_sample_rate)
+        start_time_loaded_padding = max(0, self.c_start_time - self.loaded_padding_s)
+        end_time_loaded_padding = min(
+            len(self.c_audio_data), self.c_end_time + self.loaded_padding_s
+        )
+        idx_start_padded = int(start_time_loaded_padding * self.c_sample_rate)
+        idx_end_padded = int(end_time_loaded_padding * self.c_sample_rate)
 
         # plot padded audio
         y_audio_data = self.c_audio_data[idx_start_padded:idx_end_padded]
-        x_time_axis = np.linspace(start_time_padded, end_time_padded, len(y_audio_data))
+        x_time_axis = np.linspace(
+            start_time_loaded_padding, end_time_loaded_padding, len(y_audio_data)
+        )
         self.plot_widget.clear()
         self.plot_widget.plot(x_time_axis, y_audio_data, pen="w")
+
+        # set the range of the viewport
+        start_time_padded = max(0, self.c_start_time - self.padding_s)
+        end_time_padded = min(len(self.c_audio_data), self.c_end_time + self.padding_s)
         self.plot_widget.setXRange(start_time_padded, end_time_padded)
 
         # Lock y-axis to prevent scrolling
