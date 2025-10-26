@@ -100,7 +100,7 @@ class AudioAnnotator(QMainWindow):
         self.rater_name = None
 
         # Settings file path
-        self.settings_file = Path("audiotag_settings.json")
+        self.settings_file = Path("wavescribe_settings.json")
 
         self.padding_s = 1.2
         self.loaded_padding_s = 6
@@ -225,7 +225,7 @@ class AudioAnnotator(QMainWindow):
             sys.exit(0)
 
     def init_ui(self):
-        self.setWindowTitle("Audiotag")
+        self.setWindowTitle("wavescribe")
         self.setGeometry(100, 100, 1600, 900)
 
         central_widget = QWidget()
