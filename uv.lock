@@ -3,31 +3,6 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "audiotag"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyqt6" },
-    { name = "pyqtgraph" },
-    { name = "ruff" },
-    { name = "sounddevice" },
-    { name = "soundfile" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=2.3.4" },
-    { name = "pandas", specifier = ">=2.3.3" },
-    { name = "pyqt6", specifier = ">=6.9.1" },
-    { name = "pyqtgraph", specifier = ">=0.13.7" },
-    { name = "ruff", specifier = ">=0.14.1" },
-    { name = "sounddevice", specifier = ">=0.5.3" },
-    { name = "soundfile", specifier = ">=0.13.1" },
-]
-
-[[package]]
 name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -365,4 +340,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/95/32/1a225d6164441be760d75c2c42e2780dc0873fe382da3e98a2e1e48361e5/tzdata-2025.2.tar.gz", hash = "sha256:b60a638fcc0daffadf82fe0f57e53d06bdec2f36c4df66280ae79bce6bd6f2b9", size = 196380, upload-time = "2025-03-23T13:54:43.652Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/23/c7abc0ca0a1526a0774eca151daeb8de62ec457e77262b66b359c3c7679e/tzdata-2025.2-py2.py3-none-any.whl", hash = "sha256:1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8", size = 347839, upload-time = "2025-03-23T13:54:41.845Z" },
+]
+
+[[package]]
+name = "wavescribe"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyqt6" },
+    { name = "pyqtgraph" },
+    { name = "ruff" },
+    { name = "sounddevice" },
+    { name = "soundfile" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.3.4" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pyqt6", specifier = ">=6.9.1" },
+    { name = "pyqtgraph", specifier = ">=0.13.7" },
+    { name = "ruff", specifier = ">=0.14.1" },
+    { name = "sounddevice", specifier = ">=0.5.3" },
+    { name = "soundfile", specifier = ">=0.13.1" },
 ]
