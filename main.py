@@ -1,4 +1,5 @@
 # main.py
+import json
 import sys
 from pathlib import Path
 
@@ -10,8 +11,12 @@ import soundfile as sf
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -24,13 +29,80 @@ from PyQt6.QtWidgets import (
 )
 
 
+class ConfigurationDialog(QDialog):
+    """Dialog for configuring data folder and rater name on startup"""
+
+    def __init__(self, parent=None, data_dir=None, rater_name=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configuration")
+        self.setModal(True)
+        self.setFixedSize(500, 200)
+
+        layout = QVBoxLayout(self)
+
+        # Form layout for inputs
+        form_layout = QFormLayout()
+
+        # Data folder selection
+        self.data_dir_edit = QLineEdit()
+        self.data_dir_edit.setText(str(data_dir) if data_dir else "")
+        self.browse_button = QPushButton("Browse...")
+        self.browse_button.clicked.connect(self.browse_data_folder)
+
+        data_folder_layout = QHBoxLayout()
+        data_folder_layout.addWidget(self.data_dir_edit)
+        data_folder_layout.addWidget(self.browse_button)
+
+        form_layout.addRow("Data Folder:", data_folder_layout)
+
+        # Rater name input
+        self.rater_name_edit = QLineEdit()
+        self.rater_name_edit.setText(rater_name or "")
+        form_layout.addRow("Rater Initials:", self.rater_name_edit)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.ok_button = QPushButton("OK")
+        self.cancel_button = QPushButton("Cancel")
+
+        self.ok_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addWidget(self.cancel_button)
+        layout.addLayout(button_layout)
+
+        # Set OK as default button
+        self.ok_button.setDefault(True)
+
+    def browse_data_folder(self):
+        """Open folder selection dialog"""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Data Folder", self.data_dir_edit.text() or str(Path.home())
+        )
+        if folder:
+            self.data_dir_edit.setText(folder)
+
+    def get_data_dir(self):
+        """Get the selected data directory"""
+        return Path(self.data_dir_edit.text())
+
+    def get_rater_name(self):
+        """Get the entered rater name"""
+        return self.rater_name_edit.text().strip()
+
+
 class AudioAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.data_dir = Path("data")
-        self.output_dir = self.data_dir / "output"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.rater_name = "GKP"
+        self.data_dir = None
+        self.rater_name = None
+
+        # Settings file path
+        self.settings_file = Path("audiotag_settings.json")
+
         self.padding_s = 1.2
         self.loaded_padding_s = 6
         self.context_words = 4
@@ -59,6 +131,100 @@ class AudioAnnotator(QMainWindow):
 
         self.init_ui()
 
+        # Load settings or show configuration dialog
+        if not self.load_settings():
+            self.show_configuration_dialog()
+
+        assert self.data_dir is not None, "Data directory not set"
+
+        self.output_dir = self.data_dir / "output"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_settings(self):
+        """Load settings from JSON file. Returns True if successful, False otherwise."""
+        try:
+            if self.settings_file.exists():
+                with open(self.settings_file, "r") as f:
+                    settings = json.load(f)
+
+                self.data_dir = Path(settings.get("data_dir", "data"))
+                self.rater_name = settings.get("rater_name", "GKP")
+
+                # Validate that the data directory exists
+                if not self.data_dir.exists():
+                    print(f"Warning: Data directory {self.data_dir} does not exist")
+                    return False
+
+                # Update sub list
+                self.update_sub_list()
+                self.update_current_rater()
+
+                return True
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+        return False
+
+    def save_settings(self):
+        """Save current settings to JSON file."""
+        try:
+            settings = {"data_dir": str(self.data_dir), "rater_name": self.rater_name}
+            with open(self.settings_file, "w") as f:
+                json.dump(settings, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+            return False
+
+    def show_configuration_dialog(self):
+        """Show configuration dialog and update settings based on user input."""
+        dialog = ConfigurationDialog(
+            self, data_dir=self.data_dir, rater_name=self.rater_name
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get values from dialog
+            new_data_dir = dialog.get_data_dir()
+            new_rater_name = dialog.get_rater_name()
+
+            # Validate inputs
+            if not new_data_dir.exists():
+                QMessageBox.warning(
+                    self,
+                    "Invalid Data Directory",
+                    f"The selected directory does not exist: {new_data_dir}",
+                )
+                # Try again
+                self.show_configuration_dialog()
+                return
+
+            if not new_rater_name:
+                QMessageBox.warning(
+                    self, "Invalid Rater Initials", "Please enter a rater initials."
+                )
+                # Try again
+                self.show_configuration_dialog()
+                return
+
+            # Update settings
+            self.data_dir = new_data_dir
+            self.rater_name = new_rater_name
+
+            # Update sub list
+            self.update_sub_list()
+            self.update_current_rater()
+
+            # Save settings
+            if not self.save_settings():
+                QMessageBox.warning(
+                    self,
+                    "Settings Save Failed",
+                    "Could not save settings. They will be lost when the "
+                    "application closes.",
+                )
+        else:
+            # User cancelled, exit application
+            sys.exit(0)
+
     def init_ui(self):
         self.setWindowTitle("Audiotag")
         self.setGeometry(100, 100, 1600, 900)
@@ -72,16 +238,14 @@ class AudioAnnotator(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(splitter)
 
-        self.left_panel, self.file_list, self.left_panel_text_field = (
-            self.create_left_panel_file_list()
-        )
+        self.left_panel, self.left_panel_text_field = self.create_left_panel_file_list()
         self.right_panel_splitter = self.create_right_panel_rating()
         self.right_panel_splitter.setSizes([900, 300])
 
         splitter.addWidget(self.left_panel)
         splitter.addWidget(self.right_panel_splitter)
 
-    def create_left_panel_file_list(self) -> tuple[QWidget, QListWidget, QLabel]:
+    def create_left_panel_file_list(self) -> tuple[QWidget, QLabel]:
         """Function that creates the left panel for the file list."""
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
@@ -90,6 +254,9 @@ class AudioAnnotator(QMainWindow):
         # Add loading button
         load_button = QPushButton("LOAD")
         load_button.clicked.connect(self.load_audio_file)
+        configure_button = QPushButton("CONFIGURE")
+        configure_button.clicked.connect(self.show_configuration_dialog)
+        left_layout.addWidget(configure_button)
         left_layout.addWidget(load_button)
 
         # Add little text panel
@@ -99,16 +266,10 @@ class AudioAnnotator(QMainWindow):
         left_layout.addWidget(text_field)
 
         # Add list
-        file_list = QListWidget()
-        left_layout.addWidget(file_list)
+        self.sub_list = QListWidget()
+        left_layout.addWidget(self.sub_list)
 
-        # Add some sample items
-        rating_files = sorted(list((self.data_dir / "ratings").glob("*.csv")))
-        for rating_file in rating_files:
-            sub_id = "-".join(rating_file.stem.split("-")[0:2])
-            file_list.addItem(QListWidgetItem(sub_id))
-
-        return left_panel, file_list, text_field
+        return left_panel, text_field
 
     def create_right_panel_rating(self) -> QSplitter:
         """Function that creates the right panel for the rating of a sub"""
@@ -159,11 +320,16 @@ class AudioAnnotator(QMainWindow):
         self.prev_button = QPushButton("PREV WORD")
         self.split_button = QPushButton("SPLIT WORD")
         self.delete_button = QPushButton("DELETE WORD")
-        self.text_field_rater = QLabel("Last rater: N/A")
-        font = self.text_field_rater.font()
+        self.text_field_old_rater = QLabel("Last rater: N/A")
+        font = self.text_field_old_rater.font()
         font.setPointSize(18)
-        self.text_field_rater.setFont(font)
-        self.text_field_rater.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text_field_old_rater.setFont(font)
+        self.text_field_old_rater.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.text_field_current_rater = QLabel(f"Current rater: {self.rater_name}")
+        font = self.text_field_current_rater.font()
+        font.setPointSize(18)
+        self.text_field_current_rater.setFont(font)
+        self.text_field_current_rater.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # disable buttons
         self.play_button.setEnabled(False)
@@ -190,7 +356,8 @@ class AudioAnnotator(QMainWindow):
                 self.reset_button,
                 self.split_button,
                 self.delete_button,
-                self.text_field_rater,
+                self.text_field_old_rater,
+                self.text_field_current_rater,
             ],
             height_min=36,
             width_max=210,
@@ -220,9 +387,10 @@ class AudioAnnotator(QMainWindow):
         play_button_panel = QWidget()
         play_button_layout = QVBoxLayout(play_button_panel)
         play_button_layout.addStretch()
-        play_button_layout.addWidget(self.text_field_rater)
+        play_button_layout.addWidget(self.text_field_old_rater)
         play_button_layout.addWidget(self.play_button)
         play_button_layout.addWidget(self.play_context_button)
+        play_button_layout.addWidget(self.text_field_current_rater)
         play_button_layout.addStretch()
 
         # Middle column: Navigation and editing buttons
@@ -240,11 +408,25 @@ class AudioAnnotator(QMainWindow):
         bottom_layout.addWidget(navigation_button_panel)
         bottom_layout.addWidget(play_button_panel)
         bottom_layout.addWidget(self.word_text_edit)
-        # bottom_layout.addStretch()
 
         right_panel_splitter.addWidget(bottom_panel)
 
         return right_panel_splitter
+
+    def update_current_rater(self):
+        """Updates the current rater text field on the right"""
+        self.text_field_current_rater.setText(f"Current rater: {self.rater_name}")
+
+    def update_sub_list(self):
+        """Updates the sub list on the left"""
+        assert self.data_dir is not None, "Data directory not set"
+
+        # Add some sample items
+        self.sub_list.clear()
+        rating_files = sorted(list((self.data_dir / "ratings").glob("*.csv")))
+        for rating_file in rating_files:
+            sub_id = "-".join(rating_file.stem.split("-")[0:2])
+            self.sub_list.addItem(QListWidgetItem(sub_id))
 
     def show_current_word(self):
         """Function that sets current word audio segment and plots it."""
@@ -270,7 +452,7 @@ class AudioAnnotator(QMainWindow):
         # update word counter & rater text field
         last_rater = self.c_rating_df.loc[self.c_word_index, "rater"]
         last_rater = last_rater or "N/A"
-        self.text_field_rater.setText(f"Last rater: {last_rater}")
+        self.text_field_old_rater.setText(f"Last rater: {last_rater}")
 
         # get indices
         self.c_start_time = self.c_rating_df.loc[self.c_word_index, "start"]
@@ -636,7 +818,9 @@ class AudioAnnotator(QMainWindow):
 
     def load_audio_file(self):
         """Function that is called when the LOAD button is clicked."""
-        curr_item = self.file_list.currentItem()
+        assert self.data_dir is not None, "Data directory not set"
+
+        curr_item = self.sub_list.currentItem()
         if curr_item is not None:
             sub_id = curr_item.text()
             self.c_sub_id = sub_id
