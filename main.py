@@ -44,7 +44,10 @@ class ConfigurationDialog(QDialog):
 
         # Data folder selection
         self.data_dir_edit = QLineEdit()
-        self.data_dir_edit.setText(str(data_dir) if data_dir else "")
+        base_data_dir_resolved = Path("data").resolve()
+        self.data_dir_edit.setText(
+            str(data_dir) if data_dir else str(base_data_dir_resolved)
+        )
         self.browse_button = QPushButton("Browse...")
         self.browse_button.clicked.connect(self.browse_data_folder)
 
@@ -146,12 +149,15 @@ class AudioAnnotator(QMainWindow):
                 with open(self.settings_file, "r") as f:
                     settings = json.load(f)
 
-                self.data_dir = Path(settings.get("data_dir", "data"))
-                self.rater_name = settings.get("rater_name", "GKP")
+                self.data_dir = Path(settings.get("data_dir"))
+                self.rater_name = settings.get("rater_name")
 
-                # Validate that the data directory exists
+                # Validate fields
                 if not self.data_dir.exists():
                     print(f"Warning: Data directory {self.data_dir} does not exist")
+                    return False
+                if self.rater_name is None:
+                    print("Warning: Rater name is not set")
                     return False
 
                 # Update sub list
