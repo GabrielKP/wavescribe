@@ -765,12 +765,13 @@ class AudioAnnotator(QMainWindow):
             self.c_rating_df.loc[self.c_word_index, "transcription"]
         )
         current_word = self.normalize_word(self.word_text_edit.toPlainText())
+        # update rater regardless of change
+        self.c_rating_df.loc[self.c_word_index, "rater"] = self.rater_name
 
         # only if something changed, then save
         if previous_word != current_word or self.c_changed_times:
             # save
             self.c_rating_df.loc[self.c_word_index, "transcription"] = current_word
-            self.c_rating_df.loc[self.c_word_index, "rater"] = self.rater_name
             self.c_rating_df.loc[self.c_word_index, "start"] = self.c_start_time
             self.c_rating_df.loc[self.c_word_index, "end"] = self.c_end_time
             self.c_changed_times = False
@@ -855,7 +856,7 @@ class AudioAnnotator(QMainWindow):
                 )
 
             # get audio
-            audio_file = self.data_dir / "audio" / f"{sub_id}_carver.wav"
+            audio_file = self.data_dir / "audio" / f"{sub_id}-audio_carver.wav"
             if not audio_file.exists():
                 full_audio_file = audio_file.resolve()
                 QMessageBox.warning(
