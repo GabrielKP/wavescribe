@@ -469,12 +469,40 @@ class AudioAnnotator(QMainWindow):
         idx_start_padded = int(start_time_loaded_padding * self.c_sample_rate)
         idx_end_padded = int(end_time_loaded_padding * self.c_sample_rate)
 
+        # clear plot
+        self.plot_widget.clear()
+
+        # shade previous and next words
+        adjacent_word_mask = (self.c_rating_df["end"] > start_time_loaded_padding) & (
+            self.c_rating_df["start"] < end_time_loaded_padding
+        )
+        adjacent_word_mask[self.c_word_index] = False
+        adjacent_words = self.c_rating_df[adjacent_word_mask]
+        for _, row in adjacent_words.iterrows():
+            self.plot_widget.addItem(
+                pg.LinearRegionItem(
+                    values=[row["start"], row["end"]],
+                    brush=pg.mkBrush((128, 128, 128, 60)),
+                    pen=pg.mkPen(None),
+                    movable=False,
+                )
+            )
+            text_x: float = (row["start"] + row["end"]) / 2  # type: ignore
+            text_y = self.c_audio_y_max * 0.9
+
+            text_item = pg.TextItem(
+                text=row["transcription"],  # type: ignore
+                color="w",
+                anchor=(0.5, 0.5),
+            )
+            text_item.setPos(text_x, text_y)
+            self.plot_widget.addItem(text_item)
+
         # plot padded audio
         y_audio_data = self.c_audio_data[idx_start_padded:idx_end_padded]
         x_time_axis = np.linspace(
             start_time_loaded_padding, end_time_loaded_padding, len(y_audio_data)
         )
-        self.plot_widget.clear()
         self.plot_widget.plot(x_time_axis, y_audio_data, pen="w")
 
         # set the range of the viewport
