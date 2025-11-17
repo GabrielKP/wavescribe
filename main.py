@@ -1,4 +1,6 @@
 import json
+import logging
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +28,44 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+INPUT_DIR_NAME = "pre_annotated"
+AUDIO_DIR_NAME = "audio"
+OUTPUT_DIR_NAME = "output"
+
+FORMAT = "[%(levelname)s] %(name)s.%(funcName)s - %(message)s"
+logging.basicConfig(format=FORMAT)
+log = logging.getLogger(__name__)
+
+
+def load_settings(settings_file: Path) -> tuple[str | None, str | None]:
+    """Load settings from JSON file.
+
+    Returns tuple (data_dir, rater_name) if successful, (None, None) otherwise.
+    """
+    try:
+        if settings_file.exists():
+            with open(settings_file, "r") as f:
+                settings = json.load(f)
+
+            data_dir = settings.get("data_dir")
+            rater_name = settings.get("rater_name")
+            return (data_dir, rater_name)
+    except Exception as e:
+        print(f"Error loading settings: {e}")
+    return None, None
+
+
+def save_settings(settings_file: Path, data_dir: Path, rater_name: str):
+    """Save current settings to JSON file."""
+    try:
+        settings = {"data_dir": str(data_dir), "rater_name": rater_name}
+        with open(settings_file, "w") as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+        return False
 
 
 class ConfigurationDialog(QDialog):
@@ -97,22 +137,29 @@ class ConfigurationDialog(QDialog):
 
 
 class AudioAnnotator(QMainWindow):
-    def __init__(self):
+    def __init__(self, data_dir: str | Path, rater_name: str):
         super().__init__()
-        self.data_dir = None
-        self.rater_name = None
-
-        # Settings file path
-        self.settings_file = Path("wavescribe_settings.json")
+        self.data_dir = Path(data_dir)
+        self.rater_name = rater_name
 
         self.padding_s = 1.2
         self.loaded_padding_s = 6
         self.context_words = 4
 
+        self.output_dir = self.data_dir / "output"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir = self.data_dir / "audio"
+        self.pre_annotated_dir = self.data_dir / "pre_annotated"
+        self.settings_file = self.data_dir / "wavescribe_settings.json"
+
         self.needed_columns = [
             "transcription",
+            "start",
+            "end",
+        ]
+        self.needed_output_columns = [
+            "transcription",
             "word_clean",
-            "pre_post",
             "start",
             "end",
             "rater",
@@ -128,107 +175,19 @@ class AudioAnnotator(QMainWindow):
         self.c_end_time = None
         self.c_changed_times = False
         self.c_sub_id = None
+        self.c_audio_y_max = None
+        self.c_audio_y_min = None
         self.playback_line = None
         self.playback_timer = None
 
         self.init_ui()
 
-        # Load settings or show configuration dialog
-        if not self.load_settings():
-            self.show_configuration_dialog()
+        # hold the pre-annotated and audio paths for each sub-id
+        self.sub_ids_with_paths: dict[str, tuple[Path, Path, Path]] = dict()
 
-        assert self.data_dir is not None, "Data directory not set"
-
-        self.output_dir = self.data_dir / "output"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-    def load_settings(self):
-        """Load settings from JSON file. Returns True if successful, False otherwise."""
-        try:
-            if self.settings_file.exists():
-                with open(self.settings_file, "r") as f:
-                    settings = json.load(f)
-
-                self.data_dir = Path(settings.get("data_dir"))
-                self.rater_name = settings.get("rater_name")
-
-                # Validate fields
-                if not self.data_dir.exists():
-                    print(f"Warning: Data directory {self.data_dir} does not exist")
-                    return False
-                if self.rater_name is None:
-                    print("Warning: Rater name is not set")
-                    return False
-
-                # Update sub list
-                self.update_sub_list()
-                self.update_current_rater()
-
-                return True
-        except Exception as e:
-            print(f"Error loading settings: {e}")
-        return False
-
-    def save_settings(self):
-        """Save current settings to JSON file."""
-        try:
-            settings = {"data_dir": str(self.data_dir), "rater_name": self.rater_name}
-            with open(self.settings_file, "w") as f:
-                json.dump(settings, f, indent=2)
-            return True
-        except Exception as e:
-            print(f"Error saving settings: {e}")
-            return False
-
-    def show_configuration_dialog(self):
-        """Show configuration dialog and update settings based on user input."""
-        dialog = ConfigurationDialog(
-            self, data_dir=self.data_dir, rater_name=self.rater_name
-        )
-
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            # Get values from dialog
-            new_data_dir = dialog.get_data_dir()
-            new_rater_name = dialog.get_rater_name()
-
-            # Validate inputs
-            if not new_data_dir.exists():
-                QMessageBox.warning(
-                    self,
-                    "Invalid Data Directory",
-                    f"The selected directory does not exist: {new_data_dir}",
-                )
-                # Try again
-                self.show_configuration_dialog()
-                return
-
-            if not new_rater_name:
-                QMessageBox.warning(
-                    self, "Invalid Rater Initials", "Please enter a rater initials."
-                )
-                # Try again
-                self.show_configuration_dialog()
-                return
-
-            # Update settings
-            self.data_dir = new_data_dir
-            self.rater_name = new_rater_name
-
-            # Update sub list
-            self.update_sub_list()
-            self.update_current_rater()
-
-            # Save settings
-            if not self.save_settings():
-                QMessageBox.warning(
-                    self,
-                    "Settings Save Failed",
-                    "Could not save settings. They will be lost when the "
-                    "application closes.",
-                )
-        else:
-            # User cancelled, exit application
-            sys.exit(0)
+        # Update sub list and current rater
+        self.update_sub_list()
+        self.update_current_rater()
 
     def init_ui(self):
         self.setWindowTitle("wavescribe")
@@ -259,9 +218,6 @@ class AudioAnnotator(QMainWindow):
         # Add loading button
         load_button = QPushButton("LOAD")
         load_button.clicked.connect(self.load_audio_file)
-        configure_button = QPushButton("CONFIGURE")
-        configure_button.clicked.connect(self.show_configuration_dialog)
-        left_layout.addWidget(configure_button)
         left_layout.addWidget(load_button)
 
         # Add little text panel
@@ -418,20 +374,99 @@ class AudioAnnotator(QMainWindow):
 
         return right_panel_splitter
 
+    def show_error(self, text: str, title: str = "Error"):
+        """Shows an error message in a QMessageBox"""
+        QMessageBox.warning(self, title, text)
+        print(f"ERROR: {title} - {text}")
+
     def update_current_rater(self):
         """Updates the current rater text field on the right"""
         self.text_field_current_rater.setText(f"Current rater: {self.rater_name}")
 
     def update_sub_list(self):
-        """Updates the sub list on the left"""
-        assert self.data_dir is not None, "Data directory not set"
+        """Updates the sub list on the left.
 
-        # Add some sample items
+        Only show sub-ids for which both a rating and an audio file exist.
+        """
+        # Clear the list
+        pre_annotated_paths = sorted(
+            list((self.data_dir / INPUT_DIR_NAME).glob("*.csv"))
+        )
+        audio_paths = sorted(list((self.data_dir / AUDIO_DIR_NAME).glob("*.wav")))
+
+        # Check whether data is missing
+        if len(pre_annotated_paths) == 0:
+            self.show_error(
+                text=(
+                    f"No rating (.csv) files found in {self.data_dir / INPUT_DIR_NAME}."
+                ),
+                title="MISSING DATA ERROR",
+            )
+            return 1
+        if len(audio_paths) == 0:
+            self.show_error(
+                text=(
+                    f"No audio (.wav) files found in {self.data_dir / AUDIO_DIR_NAME}."
+                ),
+                title="MISSING DATA ERROR",
+            )
+            return 1
+
+        # Get all sub-ids from pre-annotated files
+        sub_ids_pre_annotated: dict[str, Path] = dict()
+        for pre_annotated_path in pre_annotated_paths:
+            sub_id_match = re.match(r"^sub-[0-9]+", pre_annotated_path.stem)
+            if sub_id_match is None:
+                log.info(f"Invalid pre_annotated file name: {pre_annotated_path.stem}")
+                continue
+            sub_id = sub_id_match.group(0)
+            sub_ids_pre_annotated[sub_id] = pre_annotated_path
+
+        # Get all sub-ids from audio files and match with pre-annotated files
+        sub_ids_with_paths: dict[str, tuple[Path, Path, Path]] = dict()
+        for audio_path in audio_paths:
+            sub_id_match = re.match(r"^sub-[0-9]+", audio_path.stem)
+            if sub_id_match is None:
+                log.info(f"Invalid audio file name: {audio_path.stem}")
+                continue
+            sub_id = sub_id_match.group(0)
+            if sub_id not in sub_ids_pre_annotated:
+                log.info(f"Audio file {audio_path.stem} has no pre-annotated file.")
+                continue
+            pre_annotated_path = sub_ids_pre_annotated[sub_id]
+
+            # create path for output file
+            output_path = self.output_dir / pre_annotated_path.name
+            sub_ids_with_paths[sub_id] = (pre_annotated_path, audio_path, output_path)
+
+        # log sub ids who have pre-annotated but no audio file
+        missing_audio = set(sub_ids_pre_annotated.keys()) - set(
+            sub_ids_with_paths.keys()
+        )
+        for sub_id in missing_audio:
+            log.info(f"Sub {sub_id} has pre-annotated but no audio file.")
+
+        # Add sub-ids to list
         self.sub_list.clear()
-        rating_files = sorted(list((self.data_dir / "ratings").glob("*.csv")))
-        for rating_file in rating_files:
-            sub_id = "-".join(rating_file.stem.split("-")[0:2])
+        for sub_id in sorted(list(sub_ids_with_paths.keys())):
             self.sub_list.addItem(QListWidgetItem(sub_id))
+
+        self.sub_ids_with_paths = sub_ids_with_paths
+
+    def save_rating_df(self):
+        if self.c_rating_df is None:
+            self.show_error(
+                text="Rating dataframe not set.",
+                title="RATING DATAFRAME ERROR",
+            )
+            return 1
+        if self.c_sub_id is None:
+            self.show_error(
+                text="Sub ID not set.",
+                title="SUB ID ERROR",
+            )
+            return 1
+        self.c_rating_df.to_csv(self.sub_ids_with_paths[self.c_sub_id][2], index=False)
 
     def show_current_word(self):
         """Function that sets current word audio segment and plots it."""
@@ -440,14 +475,25 @@ class AudioAnnotator(QMainWindow):
             self.c_rating_df is None
             or self.c_audio_data is None
             or self.c_sample_rate is None
+            or self.c_audio_y_max is None
+            or self.c_audio_y_min is None
         ):
             QMessageBox.warning(
                 self,
                 "Data not loaded",
                 f"Data not loaded:\n{self.c_rating_df=}"
-                f"\n{self.c_audio_data=}\n{self.c_sample_rate=}",
+                f"\n{self.c_audio_data=}\n{self.c_sample_rate=}"
+                f"\n{self.c_audio_y_max=}\n{self.c_audio_y_min=}",
             )
-            return
+            return 1
+
+        if len(self.c_rating_df) == 0:
+            QMessageBox.warning(
+                self,
+                "Empty pre_annotated file",
+                "The pre_annotated file is empty. Please check the file.",
+            )
+            return 1
 
         # set word text
         self.word_text_edit.setText(
@@ -464,7 +510,8 @@ class AudioAnnotator(QMainWindow):
         self.c_end_time = self.c_rating_df.loc[self.c_word_index, "end"]
         start_time_loaded_padding = max(0, self.c_start_time - self.loaded_padding_s)
         end_time_loaded_padding = min(
-            len(self.c_audio_data), self.c_end_time + self.loaded_padding_s
+            len(self.c_audio_data) / self.c_sample_rate,
+            self.c_end_time + self.loaded_padding_s,
         )
         idx_start_padded = int(start_time_loaded_padding * self.c_sample_rate)
         idx_end_padded = int(end_time_loaded_padding * self.c_sample_rate)
@@ -507,7 +554,10 @@ class AudioAnnotator(QMainWindow):
 
         # set the range of the viewport
         start_time_padded = max(0, self.c_start_time - self.padding_s)
-        end_time_padded = min(len(self.c_audio_data), self.c_end_time + self.padding_s)
+        end_time_padded = min(
+            len(self.c_audio_data) / self.c_sample_rate,
+            self.c_end_time + self.padding_s,
+        )
         self.plot_widget.setXRange(start_time_padded, end_time_padded)
 
         # Lock y-axis to prevent scrolling
@@ -585,10 +635,9 @@ class AudioAnnotator(QMainWindow):
                 self.show_current_word()
         except (ValueError, IndexError):
             # If parsing fails, ignore the click
-            QMessageBox.warning(
-                self,
-                "Navigation failed, use next/prev buttons",
-                "Navigation failed, use next/prev buttons",
+            self.show_error(
+                text="Navigation failed, use next/prev buttons",
+                title="Navigation failed, use next/prev buttons",
             )
             pass
 
@@ -669,24 +718,24 @@ class AudioAnnotator(QMainWindow):
     def play_audio(self, with_padding: bool = False):
         """Play the audio from start to end of current word"""
         if self.c_start_time is None or self.c_end_time is None:
-            QMessageBox.warning(
-                self,
-                "Start or end time not set",
-                "Start or end time not set",
+            self.show_error(
+                text="Start or end time not set",
+                title="Start or end time not set",
             )
-            return
+            return 1
         if self.c_audio_data is None or self.c_sample_rate is None:
-            QMessageBox.warning(
-                self,
-                "Audio data not loaded",
-                "Audio data not loaded",
+            self.show_error(
+                text="Audio data not loaded",
+                title="Audio data not loaded",
             )
-            return
+            return 1
 
-        print("PLAYING AUDIO")
         if with_padding:
-            start_time = self.c_start_time - self.padding_s
-            end_time = self.c_end_time + self.padding_s
+            start_time = max(0, self.c_start_time - self.padding_s)
+            end_time = min(
+                len(self.c_audio_data) / self.c_sample_rate,
+                self.c_end_time + self.padding_s,
+            )
         else:
             start_time = self.c_start_time
             end_time = self.c_end_time
@@ -711,12 +760,11 @@ class AudioAnnotator(QMainWindow):
             or self.c_start_time is None
             or self.c_end_time is None
         ):
-            QMessageBox.warning(
-                self,
-                "No data loaded",
-                "No data loaded",
+            self.show_error(
+                text="No data loaded",
+                title="No data loaded",
             )
-            return
+            return 1
 
         # split df into two
         first_df = self.c_rating_df.iloc[: self.c_word_index + 1]
@@ -733,22 +781,25 @@ class AudioAnnotator(QMainWindow):
         self.c_rating_df.loc[self.c_word_index + 1, "start"] = (
             self.c_start_time + self.c_end_time
         ) / 2 + 0.1
-        # need to save new df
-        self.c_rating_df.to_csv(
-            self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
-            index=False,
+        # update transcription
+        self.c_rating_df.loc[self.c_word_index, "transcription"] = (
+            self.c_rating_df.loc[self.c_word_index, "transcription"] + " (split 1)"
         )
+        self.c_rating_df.loc[self.c_word_index + 1, "transcription"] = (
+            self.c_rating_df.loc[self.c_word_index + 1, "transcription"] + " (split 2)"
+        )
+        # need to save new df
+        self.save_rating_df()
         self.show_current_word()
 
     def delete_word(self):
         """Delete the current word"""
         if self.c_rating_df is None:
-            QMessageBox.warning(
-                self,
-                "No data loaded",
-                "No data loaded",
+            self.show_error(
+                text="No data loaded",
+                title="No data loaded",
             )
-            return
+            return 1
         # confirm deletion
         reply = QMessageBox.question(
             self,
@@ -766,10 +817,9 @@ class AudioAnnotator(QMainWindow):
             drop=True
         )
 
-        self.c_rating_df.to_csv(
-            self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
-            index=False,
-        )
+        self.save_rating_df()
+        if self.c_word_index >= len(self.c_rating_df) and self.c_word_index > 0:
+            self.c_word_index -= 1
         self.show_current_word()
 
     def normalize_word(self, word: str) -> str:
@@ -781,11 +831,12 @@ class AudioAnnotator(QMainWindow):
             or self.c_audio_data is None
             or self.c_sample_rate is None
         ):
-            QMessageBox.warning(
-                self,
-                "Data not loaded",
-                f"Data not loaded:\n{self.c_rating_df=}"
-                f"\n{self.c_audio_data=}\n{self.c_sample_rate=}",
+            self.show_error(
+                text="Data not loaded",
+                title=(
+                    f"Data not loaded:\n{self.c_rating_df=}"
+                    f"\n{self.c_audio_data=}\n{self.c_sample_rate=}"
+                ),
             )
             return
 
@@ -800,23 +851,22 @@ class AudioAnnotator(QMainWindow):
         if previous_word != current_word or self.c_changed_times:
             # save
             self.c_rating_df.loc[self.c_word_index, "transcription"] = current_word
-            self.c_rating_df.loc[self.c_word_index, "start"] = self.c_start_time
-            self.c_rating_df.loc[self.c_word_index, "end"] = self.c_end_time
+            self.c_rating_df.loc[self.c_word_index, "start"] = round(
+                self.c_start_time,  # type: ignore
+                2,
+            )
+            self.c_rating_df.loc[self.c_word_index, "end"] = round(self.c_end_time, 2)  # type: ignore
             self.c_changed_times = False
             self.c_rating_df.loc[self.c_word_index, "changed"] = True
-        self.c_rating_df.to_csv(
-            self.output_dir / f"{self.c_sub_id}-free_association_carver_rated.csv",
-            index=False,
-        )
+        self.save_rating_df()
 
     def next_word(self):
         """Function that is called when the NEXT WORD button is clicked."""
 
         if self.c_rating_df is None:
-            QMessageBox.warning(
-                self,
-                "No data loaded",
-                "No data loaded",
+            self.show_error(
+                text="No data loaded",
+                title="No data loaded",
             )
             return
 
@@ -836,10 +886,9 @@ class AudioAnnotator(QMainWindow):
         """Function that is called when the PREVIOUS WORD button is clicked."""
         self.save_rating()
         if self.c_word_index == 0:
-            QMessageBox.warning(
-                self,
-                "No previous word",
-                "No previous word",
+            self.show_error(
+                text="No previous word",
+                title="No previous word",
             )
             return
         self.c_word_index -= 1
@@ -852,58 +901,81 @@ class AudioAnnotator(QMainWindow):
 
     def load_audio_file(self):
         """Function that is called when the LOAD button is clicked."""
-        assert self.data_dir is not None, "Data directory not set"
 
         curr_item = self.sub_list.currentItem()
         if curr_item is not None:
             sub_id = curr_item.text()
-            self.c_sub_id = sub_id
-            self.left_panel_text_field.setText(f"Loading {sub_id}...")
+            self.left_panel_text_field.setText(f"Failed to load {sub_id}...")
 
-            # if rating file already exists, load it
-            rating_file = (
-                self.output_dir / f"{sub_id}-free_association_carver_rated.csv"
-            )
-            if rating_file.exists():
-                rating_df = pd.read_csv(rating_file)
-                print(f"Loaded existing rating data: {rating_file}")
-            else:
-                # get previous rating file
-                old_rating_file = (
-                    self.data_dir / "ratings" / f"{sub_id}-free_association_carver.csv"
-                )
-                rating_df = pd.read_csv(old_rating_file)
-                rating_df["changed"] = False
-                rating_df.to_csv(rating_file, index=False)
-                print("Loaded old ratings and saved as output")
-            self.c_rating_df = rating_df
-
-            for column in self.needed_columns:
-                assert column in rating_df.columns, (
-                    f"{column} column not found in rating data"
-                )
-
-            # get audio
-            audio_file = self.data_dir / "audio" / f"{sub_id}-audio_carver.wav"
-            if not audio_file.exists():
-                full_audio_file = audio_file.resolve()
-                QMessageBox.warning(
-                    self,
-                    "Audio file not found",
-                    f"Audio file not found: {full_audio_file}",
+            # load audio
+            audio_path = self.sub_ids_with_paths[sub_id][1]
+            if not audio_path.exists():
+                full_audio_path = audio_path.resolve()
+                self.show_error(
+                    text=f"Audio file not found: {full_audio_path}",
+                    title="AUDIO FILE NOT FOUND",
                 )
                 self.left_panel_text_field.setText(f"Audio not found for {sub_id}")
-                return
+                return 1
+            audio_data, sample_rate = sf.read(audio_path)
 
-            self.c_audio_data, self.c_sample_rate = sf.read(audio_file)
+            # load rating_df from pre-annotated file, or output_file
 
+            # if rating file already exists, load it
+            output_path = self.sub_ids_with_paths[sub_id][2]
+            if not output_path.exists():
+                # get pre_annotated file
+                pre_annotated_path = self.sub_ids_with_paths[sub_id][0]
+                pre_annotated_df = pd.read_csv(pre_annotated_path)
+                # check for necessary columns
+                for column in self.needed_columns:
+                    if column not in pre_annotated_df.columns:
+                        self.show_error(
+                            text=f"{column} column not found in pre_annotated data",
+                            title=f"{column} COLUMN NOT FOUND",
+                        )
+                        print(f"{column} not found in {pre_annotated_path}, aborting.")
+                        return 1
+
+                # add output columns
+                pre_annotated_df["changed"] = False
+                if "rater" not in pre_annotated_df.columns:
+                    pre_annotated_df["rater"] = None
+                if "word_clean" not in pre_annotated_df.columns:
+                    pre_annotated_df["word_clean"] = (
+                        pre_annotated_df["transcription"].str.lower().str.strip()
+                    )
+
+                # output rating file to csv
+                pre_annotated_df.to_csv(output_path, index=False)
+                print(f"Created output file {output_path}")
+
+            # load and check output data file
+            rating_df = pd.read_csv(output_path)
+            # check if all columns are present
+            for column in self.needed_output_columns:
+                if column not in rating_df.columns:
+                    self.show_error(
+                        text=(
+                            f"{column} column not found in output data,"
+                            " did you modify the file in data/output?"
+                        ),
+                        title=f"{column} COLUMN NOT FOUND",
+                    )
+                    print(f"{column} not found in {output_path}, exiting")
+                    return 1
+            print(f"Loaded output file {output_path}")
+
+            # set up the window for rating participant
+            self.c_rating_df = rating_df
+            self.c_sub_id = sub_id
+            self.c_audio_data = audio_data
+            self.c_sample_rate = sample_rate
             self.c_audio_y_max = np.max(self.c_audio_data) * 1.1
             self.c_audio_y_min = np.min(self.c_audio_data) * 1.1
-
-            self.left_panel_text_field.setText(f"Successfully loaded {sub_id}!")
-
             self.c_word_index = 0
             self.show_current_word()
+            self.left_panel_text_field.setText(f"Loaded successfully: {sub_id}")
 
 
 def main():
@@ -940,7 +1012,78 @@ def main():
 
     app.setPalette(dark_palette)
 
-    window = AudioAnnotator()
+    # Load settings or get configuration from user
+    settings_file = Path("wavescribe_settings.json")
+    data_dir = None
+    rater_name = None
+
+    # Try to load settings
+    data_dir, rater_name = load_settings(settings_file)
+
+    # Show configuration dialog to get or confirm settings
+    if data_dir is None or rater_name is None:
+        dialog = ConfigurationDialog(None, data_dir=data_dir, rater_name=rater_name)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Get values from dialog
+            new_data_dir = dialog.get_data_dir()
+            new_rater_name = dialog.get_rater_name()
+
+            # Validate inputs
+            if not new_data_dir.exists():
+                QMessageBox.warning(
+                    None,
+                    "Invalid Data Directory",
+                    f"The selected directory does not exist: {new_data_dir}",
+                )
+                print("Data dir doesnt exist, exiting")
+                sys.exit(1)
+            if not (new_data_dir / INPUT_DIR_NAME).exists():
+                QMessageBox.warning(
+                    None,
+                    "Invalid Data Directory",
+                    f"The pre_annotated directory does not exist: {new_data_dir / INPUT_DIR_NAME}",
+                )
+                print(
+                    f"Invalid pre_annotated directory: {new_data_dir / INPUT_DIR_NAME}"
+                    ", exiting"
+                )
+                sys.exit(1)
+            if not (new_data_dir / AUDIO_DIR_NAME).exists():
+                QMessageBox.warning(
+                    None,
+                    "Invalid Data Directory",
+                    f"The audio directory does not exist: {new_data_dir / AUDIO_DIR_NAME}",
+                )
+                print(
+                    f"Invalid audio directory: {new_data_dir / AUDIO_DIR_NAME}, exiting"
+                )
+
+            if not new_rater_name:
+                QMessageBox.warning(
+                    None, "Invalid Rater Initials", "Please enter a rater initials."
+                )
+                print("Invalid rater name, exiting")
+                sys.exit(1)
+
+            # Valid inputs, save settings
+            data_dir = new_data_dir
+            rater_name = new_rater_name
+            settings_file = data_dir / "wavescribe_settings.json"
+
+            if not save_settings(settings_file, data_dir, rater_name):
+                QMessageBox.warning(
+                    None,
+                    "Settings Save Failed",
+                    "Could not save settings. They will be lost when the "
+                    "application closes.",
+                )
+        else:
+            # User cancelled, exit application
+            sys.exit(0)
+
+    # Create AudioAnnotator with the configured values
+    window = AudioAnnotator(data_dir, rater_name)
     window.show()
 
     sys.exit(app.exec())
