@@ -23,6 +23,7 @@ cd wavescribe
 2. Install uv OR setup a virtual environment
 
     - **(a)** uv is a package manager which handles dependencies and virtual environments: [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+    - After you install uv it will automatically handle virtual environments for you when you run the program, nothing more is needed!
 
     - **OR (b)** set up a virtual environment with conda.
 
